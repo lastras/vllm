@@ -226,15 +226,36 @@ def get_adapter_absolute_path(lora_path: str) -> str:
     if os.path.exists(lora_path):
         return os.path.abspath(lora_path)
 
+
     # If the path does not exist locally, assume it's a Hugging Face repo.
     try:
-        local_snapshot_path = huggingface_hub.snapshot_download(
-            repo_id=lora_path)
-    except (HfHubHTTPError, RepositoryNotFoundError, EntryNotFoundError,
+        # the most prevalent assumption in Huggingface is that an HF repo contains at most one adapter
+        # most HF model paths are of the form namespace/model, but some old paths are a model name (root level)
+        # this branch of the if .. else deals with this case
+        if lora_path.count("/") <= 1:
+            local_snapshot_path = huggingface_hub.snapshot_download(repo_id=lora_path)
+        else:
+            # if the lora_path looks like namespace/model/somepath then we extract the repo_id and the subpath
+            m=re.match(r"([^/]+?/[^/]+?)/(.+[^/])",lora_path)
+            if m:
+                repo_id = m.group(1)
+                adapter_path = m.group(2)
+                # we use snapshot_download to download, from the given repo, only the adapter being requested, preserving
+                # the directory structure as given in the HF repo.
+                local_snapshot_path = huggingface_hub.snapshot_download(repo_id=repo_id,allow_patterns=adapter_path+"/*")
+                # the local path is reconstructed this way, since the convention in HF is to return the repo path regardless
+                # of what allow pattern is being passed
+                local_snapshot_path += "/"+adapter_path
+            else:
+                # exception in case the regular expression matching doesn't work.
+                raise ValueError("Incorrect format for adapter path")
+
+    except (ValueError, HfHubHTTPError, RepositoryNotFoundError, EntryNotFoundError,
             HFValidationError):
         # Handle errors that may occur during the download
         # Return original path instead instead of throwing error here
         logger.exception("Error downloading the HuggingFace model")
         return lora_path
+
 
     return local_snapshot_path
